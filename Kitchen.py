@@ -1,43 +1,44 @@
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading
+import time
 import queue
+import threading
 
-class Kitchen(BaseHTTPRequestHandler):
-    shared_resource = queue.Queue() # or stack.LifoQueue()
+import requests
+from flask import Flask, request
 
-    def _send_response(self, message):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
-        self.wfile.write(bytes(message, "utf8"))
+from settings import KITCHEN_PORT, DINNING_HALL_PORT, Task
 
-    def do_POST(self):
-        if self.path == '/consume':
-            content_length = int(self.headers['Content-Length'])
-            data = json.loads(self.rfile.read(content_length))
-            # Consume data and populate shared resource
-            shared_resource.put(data)
-            self._send_response('Data consumed')
-        else:
-            self._send_response('Invalid request')
+flask_app = Flask(__name__)
+shared_resource = queue.Queue()
+OKBLUE = '\033[94m'
+ENDC = '\033[0m'
+NR_OF_WORKERS = 6
 
-    def consume_data():
+@flask_app.route('/Kitchen', methods=['POST'])
+def Kitchen():
+    destination = request.get_json()
+    task = Task.dict2task(destination)
+    print(f'{OKBLUE}Kitchen: Received {task} from Dinning Hall{ENDC}')
+    shared_resource.put(task)
+    return {'status_code': 200}
+
+class Worker(threading.Thread):
+    def run(self):
         while True:
-            data = shared_resource.get()
-            # Extract one element from shared resource and send back to Server 1
-            self.send_to_server1(data)
-            shared_resource.task_done()
-
-    def send_to_server1(self, data):
-        # Send data to Server 1 over HTTP
-        print("sending")
-        conn = http.client.HTTPConnection('server1:8000')
-        conn.request("POST", "/receive", json.dumps(data))
+            task: Task = shared_resource.get()
+            task.destination = 'DinningHall'
+            requests.post(f'http://localhost:{DINNING_HALL_PORT}/DinningHall', json=task.task2dict())
 
 def run():
-    server_address = ('0.0.0.0', 8000)
-    httpd = HTTPServer(server_address, Kitchen)
-    print('Starting consumer server...')
-    httpd.serve_forever()
+    threads: list[threading.Thread] = []
+
+    server_thread = threading.Thread(target=lambda: flask_app.run(
+        port=KITCHEN_PORT, debug=False, use_reloader=False))
+    threads.append(server_thread)
+
+    for _ in range(NR_OF_WORKERS):
+        threads.append(Worker())
+
+    for thread in threads:
+        thread.start()
 
 run()
